@@ -12,9 +12,7 @@ generator client {
   previewFeatures = ["referentialIntegrity"]
 }
 
-model User {
-  id            String    @id @default(cuid())
-  name          String?
-  email         String?   @unique
-  emailVerified DateTime?
+model Tomato {
+  id    String  @id @default(cuid())
+  brand String?
 }

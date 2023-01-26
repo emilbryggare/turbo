@@ -1,4 +1,5 @@
 import { client } from "database";
+import { client as anotherClient } from "another-database";
 
 import type { NextApiRequest, NextApiResponse } from "next";
 
@@ -17,10 +18,12 @@ export default async function handler(
   }
 
   try {
+    // Only one of the clients below is generated, or both is generate but they overwrite eachother..
     const users = await client.user.findMany();
-    if (!users)
+    const tomatoes = await anotherClient.tomato.findMany();
+    if (!users || !tomatoes)
       throw {
-        message: "Failed to retrieve users",
+        message: "Failed to retrieve users or tomatoes",
         status: 500,
       };
 
