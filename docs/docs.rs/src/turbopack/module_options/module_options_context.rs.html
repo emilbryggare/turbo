@@ -32,24 +32,106 @@
 <span id="32">32</span>
 <span id="33">33</span>
 <span id="34">34</span>
-</pre><pre class="rust"><code><span class="kw">use </span>turbopack_core::environment::EnvironmentVc;
+<span id="35">35</span>
+<span id="36">36</span>
+<span id="37">37</span>
+<span id="38">38</span>
+<span id="39">39</span>
+<span id="40">40</span>
+<span id="41">41</span>
+<span id="42">42</span>
+<span id="43">43</span>
+<span id="44">44</span>
+<span id="45">45</span>
+<span id="46">46</span>
+<span id="47">47</span>
+<span id="48">48</span>
+<span id="49">49</span>
+<span id="50">50</span>
+<span id="51">51</span>
+<span id="52">52</span>
+<span id="53">53</span>
+<span id="54">54</span>
+<span id="55">55</span>
+<span id="56">56</span>
+<span id="57">57</span>
+<span id="58">58</span>
+<span id="59">59</span>
+<span id="60">60</span>
+<span id="61">61</span>
+<span id="62">62</span>
+<span id="63">63</span>
+<span id="64">64</span>
+<span id="65">65</span>
+<span id="66">66</span>
+<span id="67">67</span>
+<span id="68">68</span>
+<span id="69">69</span>
+<span id="70">70</span>
+<span id="71">71</span>
+<span id="72">72</span>
+<span id="73">73</span>
+<span id="74">74</span>
+<span id="75">75</span>
+</pre><pre class="rust"><code><span class="kw">use </span>indexmap::IndexMap;
+<span class="kw">use </span>serde::{Deserialize, Serialize};
+<span class="kw">use </span>turbo_tasks::{primitives::StringsVc, trace::TraceRawVcs};
+<span class="kw">use </span>turbopack_core::{environment::EnvironmentVc, resolve::options::ImportMappingVc};
 <span class="kw">use </span>turbopack_ecmascript::EcmascriptInputTransform;
+<span class="kw">use </span>turbopack_node::execution_context::ExecutionContextVc;
 
 <span class="kw">use </span><span class="kw">super</span>::ModuleRule;
+<span class="kw">use </span><span class="kw">crate</span>::condition::ContextCondition;
+
+<span class="attr">#[derive(Default, Clone, PartialEq, Eq, Debug, TraceRawVcs, Serialize, Deserialize)]
+</span><span class="kw">pub struct </span>PostCssTransformOptions {
+    <span class="kw">pub </span>postcss_package: <span class="prelude-ty">Option</span>&lt;ImportMappingVc&gt;,
+    <span class="kw">pub </span>placeholder_for_future_extensions: (),
+}
+
+<span class="attr">#[turbo_tasks::value(shared)]
+#[derive(Default, Clone, Debug)]
+</span><span class="kw">pub struct </span>WebpackLoadersOptions {
+    <span class="kw">pub </span>extension_to_loaders: IndexMap&lt;String, StringsVc&gt;,
+    <span class="kw">pub </span>placeholder_for_future_extensions: (),
+}
+
+<span class="kw">impl </span>WebpackLoadersOptions {
+    <span class="kw">pub fn </span>is_empty(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+        <span class="self">self</span>.extension_to_loaders.is_empty()
+    }
+
+    <span class="kw">pub fn </span>clone_if(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;WebpackLoadersOptions&gt; {
+        <span class="kw">if </span><span class="self">self</span>.is_empty() {
+            <span class="prelude-val">None
+        </span>} <span class="kw">else </span>{
+            <span class="prelude-val">Some</span>(<span class="self">self</span>.clone())
+        }
+    }
+}
 
 <span class="attr">#[turbo_tasks::value(shared)]
 #[derive(Default, Clone)]
 </span><span class="kw">pub struct </span>ModuleOptionsContext {
+    <span class="kw">pub </span>enable_jsx: bool,
     <span class="kw">pub </span>enable_emotion: bool,
     <span class="kw">pub </span>enable_react_refresh: bool,
     <span class="kw">pub </span>enable_styled_components: bool,
     <span class="kw">pub </span>enable_styled_jsx: bool,
+    <span class="kw">pub </span>enable_postcss_transform: <span class="prelude-ty">Option</span>&lt;PostCssTransformOptions&gt;,
+    <span class="kw">pub </span>enable_webpack_loaders: <span class="prelude-ty">Option</span>&lt;WebpackLoadersOptions&gt;,
+    <span class="kw">pub </span>enable_types: bool,
     <span class="kw">pub </span>enable_typescript_transform: bool,
+    <span class="kw">pub </span>enable_mdx: bool,
     <span class="kw">pub </span>preset_env_versions: <span class="prelude-ty">Option</span>&lt;EnvironmentVc&gt;,
     <span class="kw">pub </span>custom_ecmascript_app_transforms: Vec&lt;EcmascriptInputTransform&gt;,
     <span class="kw">pub </span>custom_ecmascript_transforms: Vec&lt;EcmascriptInputTransform&gt;,
     <span class="doccomment">/// Custom rules to be applied after all default rules.
     </span><span class="kw">pub </span>custom_rules: Vec&lt;ModuleRule&gt;,
+    <span class="kw">pub </span>execution_context: <span class="prelude-ty">Option</span>&lt;ExecutionContextVc&gt;,
+    <span class="doccomment">/// A list of rules to use a different module option context for certain
+    /// context paths. The first matching is used.
+    </span><span class="kw">pub </span>rules: Vec&lt;(ContextCondition, ModuleOptionsContextVc)&gt;,
     <span class="kw">pub </span>placeholder_for_future_extensions: (),
 }
 

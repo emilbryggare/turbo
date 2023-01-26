@@ -427,12 +427,61 @@
 <span id="427">427</span>
 <span id="428">428</span>
 <span id="429">429</span>
+<span id="430">430</span>
+<span id="431">431</span>
+<span id="432">432</span>
+<span id="433">433</span>
+<span id="434">434</span>
+<span id="435">435</span>
+<span id="436">436</span>
+<span id="437">437</span>
+<span id="438">438</span>
+<span id="439">439</span>
+<span id="440">440</span>
+<span id="441">441</span>
+<span id="442">442</span>
+<span id="443">443</span>
+<span id="444">444</span>
+<span id="445">445</span>
+<span id="446">446</span>
+<span id="447">447</span>
+<span id="448">448</span>
+<span id="449">449</span>
+<span id="450">450</span>
+<span id="451">451</span>
+<span id="452">452</span>
+<span id="453">453</span>
+<span id="454">454</span>
+<span id="455">455</span>
+<span id="456">456</span>
+<span id="457">457</span>
+<span id="458">458</span>
+<span id="459">459</span>
+<span id="460">460</span>
+<span id="461">461</span>
+<span id="462">462</span>
+<span id="463">463</span>
+<span id="464">464</span>
+<span id="465">465</span>
+<span id="466">466</span>
+<span id="467">467</span>
+<span id="468">468</span>
+<span id="469">469</span>
+<span id="470">470</span>
+<span id="471">471</span>
+<span id="472">472</span>
+<span id="473">473</span>
+<span id="474">474</span>
+<span id="475">475</span>
+<span id="476">476</span>
+<span id="477">477</span>
+<span id="478">478</span>
+<span id="479">479</span>
 </pre><pre class="rust"><code><span class="attr">#![feature(min_specialization)]
 #![feature(trait_alias)]
 #![feature(array_chunks)]
 
-</span><span class="kw">pub mod </span>fs;
-<span class="kw">pub mod </span>html;
+</span><span class="kw">pub mod </span>html;
 <span class="kw">pub mod </span>introspect;
 <span class="kw">pub mod </span>source;
 <span class="kw">pub mod </span>update;
@@ -441,7 +490,7 @@
     borrow::Cow,
     collections::{btree_map::Entry, BTreeMap},
     future::Future,
-    net::SocketAddr,
+    net::{SocketAddr, TcpListener},
     pin::Pin,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -454,6 +503,7 @@
 <span class="kw">use </span>futures::{StreamExt, TryStreamExt};
 <span class="kw">use </span>hyper::{
     header::HeaderName,
+    server::{conn::AddrIncoming, Builder},
     service::{make_service_fn, service_fn},
     Request, Response, Server,
 };
@@ -468,8 +518,8 @@
 
 <span class="kw">use </span><span class="self">self</span>::{
     source::{
-        query::Query, ContentSourceContent, ContentSourceDataVary, ContentSourceResultVc,
-        ContentSourceVc, ProxyResultReadRef,
+        query::Query, ContentSourceContent, ContentSourceDataVary, ContentSourceResult,
+        ContentSourceResultVc, ContentSourceVc, ProxyResultReadRef,
     },
     update::{protocol::ResourceIdentifier, UpdateServer},
 };
@@ -491,6 +541,14 @@
     <span class="kw">fn </span>get_source(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; ContentSourceVc {
         <span class="self">self</span>()
     }
+}
+
+<span class="attr">#[derive(TraceRawVcs, Debug)]
+</span><span class="kw">pub struct </span>DevServerBuilder {
+    <span class="attr">#[turbo_tasks(trace_ignore)]
+    </span><span class="kw">pub </span>addr: SocketAddr,
+    <span class="attr">#[turbo_tasks(trace_ignore)]
+    </span>server: Builder&lt;AddrIncoming&gt;,
 }
 
 <span class="attr">#[derive(TraceRawVcs)]
@@ -535,23 +593,41 @@
     source: ContentSourceVc,
     path: <span class="kw-2">&amp;</span>str,
     data: Value&lt;ContentSourceData&gt;,
+    vary: Value&lt;ContentSourceDataVary&gt;,
 ) -&gt; <span class="prelude-ty">Result</span>&lt;GetFromSourceResultVc&gt; {
-    <span class="kw">let </span>content = source.get(path, data).<span class="kw">await</span><span class="question-mark">?</span>.content.<span class="kw">await</span><span class="question-mark">?</span>;
-    <span class="prelude-val">Ok</span>(<span class="kw">match </span><span class="kw-2">&amp;*</span>content {
-        ContentSourceContent::Static(content_vc) =&gt; {
-            <span class="kw">if let </span>AssetContent::File(file) = <span class="kw-2">&amp;*</span>content_vc.content().<span class="kw">await</span><span class="question-mark">? </span>{
-                GetFromSourceResult::Static(file.<span class="kw">await</span><span class="question-mark">?</span>)
+    <span class="kw">let </span>result = source.get(path, data.clone()).<span class="kw">await</span><span class="question-mark">?</span>;
+    <span class="prelude-val">Ok</span>(<span class="kw">match </span><span class="kw-2">&amp;*</span>result {
+        ContentSourceResult::NotFound =&gt; GetFromSourceResult::NotFound,
+        ContentSourceResult::NeedData(data) =&gt; GetFromSourceResult::NeedData {
+            source: data.source.resolve().<span class="kw">await</span><span class="question-mark">?</span>,
+            path: data.path.clone(),
+            vary: data.vary.clone(),
+        },
+        ContentSourceResult::Result { get_content, .. } =&gt; {
+            <span class="kw">let </span>content_vary = get_content.vary().<span class="kw">await</span><span class="question-mark">?</span>;
+            <span class="kw">if </span><span class="kw-2">*</span>vary != <span class="kw-2">*</span>content_vary {
+                GetFromSourceResult::NeedData {
+                    source: ContentSourceResultVc::exact(<span class="kw-2">*</span>get_content).into(),
+                    path: String::new(),
+                    vary: content_vary.clone_value(),
+                }
             } <span class="kw">else </span>{
-                GetFromSourceResult::NotFound
+                <span class="kw">let </span>content = get_content.get(data).<span class="kw">await</span><span class="question-mark">?</span>;
+                <span class="kw">match </span><span class="kw-2">&amp;*</span>content {
+                    ContentSourceContent::NotFound =&gt; GetFromSourceResult::NotFound,
+                    ContentSourceContent::Static(content_vc) =&gt; {
+                        <span class="kw">if let </span>AssetContent::File(file) = <span class="kw-2">&amp;*</span>content_vc.content().<span class="kw">await</span><span class="question-mark">? </span>{
+                            GetFromSourceResult::Static(file.<span class="kw">await</span><span class="question-mark">?</span>)
+                        } <span class="kw">else </span>{
+                            GetFromSourceResult::NotFound
+                        }
+                    }
+                    ContentSourceContent::HttpProxy(proxy) =&gt; {
+                        GetFromSourceResult::HttpProxy(proxy.<span class="kw">await</span><span class="question-mark">?</span>)
+                    }
+                }
             }
         }
-        ContentSourceContent::HttpProxy(proxy) =&gt; GetFromSourceResult::HttpProxy(proxy.<span class="kw">await</span><span class="question-mark">?</span>),
-        ContentSourceContent::NeedData { source, path, vary } =&gt; GetFromSourceResult::NeedData {
-            source: source.resolve().<span class="kw">await</span><span class="question-mark">?</span>,
-            path: path.clone(),
-            vary: vary.clone(),
-        },
-        ContentSourceContent::NotFound =&gt; GetFromSourceResult::NotFound,
     }
     .cell())
 }
@@ -564,8 +640,14 @@
     console_ui: ConsoleUiVc,
 ) -&gt; <span class="prelude-ty">Result</span>&lt;Response&lt;hyper::Body&gt;&gt; {
     <span class="kw">let </span><span class="kw-2">mut </span>data = ContentSourceData::default();
+    <span class="kw">let </span><span class="kw-2">mut </span>data_vary = ContentSourceDataVary::default();
     <span class="kw">loop </span>{
-        <span class="kw">let </span>content_source_result = get_from_source(resolved_source, <span class="kw-2">&amp;</span>asset_path, Value::new(data));
+        <span class="kw">let </span>content_source_result = get_from_source(
+            resolved_source,
+            <span class="kw-2">&amp;</span>asset_path,
+            Value::new(data),
+            Value::new(data_vary),
+        );
         handle_issues(
             content_source_result,
             path,
@@ -622,6 +704,7 @@
                 resolved_source = <span class="kw-2">*</span>source;
                 asset_path = Cow::Owned(path.to_string());
                 data = request_to_data(<span class="kw-2">&amp;mut </span>request, vary).<span class="kw">await</span><span class="question-mark">?</span>;
+                data_vary = vary.clone();
                 <span class="kw">continue</span>;
             }
             GetFromSourceResult::NotFound =&gt; {}
@@ -631,12 +714,30 @@
 }
 
 <span class="kw">impl </span>DevServer {
-    <span class="kw">pub fn </span>listen(
+    <span class="kw">pub fn </span>listen(addr: SocketAddr) -&gt; <span class="prelude-ty">Result</span>&lt;DevServerBuilder, anyhow::Error&gt; {
+        <span class="comment">// This is annoying. The hyper::Server doesn&#39;t allow us to know which port was
+        // bound (until we build it with a request handler) when using the standard
+        // `server::try_bind` approach. This is important when binding the `0` port,
+        // because the OS will remap that to an actual free port, and we need to know
+        // that port before we build the request handler. So we need to construct a
+        // real TCP listener, see if it bound, and get its bound address.
+        </span><span class="kw">let </span>listener = TcpListener::bind(addr).context(<span class="string">&quot;not able to bind address&quot;</span>)<span class="question-mark">?</span>;
+        <span class="kw">let </span>addr = listener
+            .local_addr()
+            .context(<span class="string">&quot;not able to get bound address&quot;</span>)<span class="question-mark">?</span>;
+
+        <span class="kw">let </span>server = Server::from_tcp(listener).context(<span class="string">&quot;Not able to start server&quot;</span>)<span class="question-mark">?</span>;
+        <span class="prelude-val">Ok</span>(DevServerBuilder { addr, server })
+    }
+}
+
+<span class="kw">impl </span>DevServerBuilder {
+    <span class="kw">pub fn </span>serve(
+        <span class="self">self</span>,
         turbo_tasks: Arc&lt;<span class="kw">dyn </span>TurboTasksApi&gt;,
         source_provider: <span class="kw">impl </span>SourceProvider + Clone + Send + Sync,
-        addr: SocketAddr,
         console_ui: Arc&lt;ConsoleUi&gt;,
-    ) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, anyhow::Error&gt; {
+    ) -&gt; DevServer {
         <span class="kw">let </span>make_svc = make_service_fn(<span class="kw">move </span>|<span class="kw">_</span>| {
             <span class="kw">let </span>tt = turbo_tasks.clone();
             <span class="kw">let </span>source_provider = source_provider.clone();
@@ -696,9 +797,10 @@
                             )
                             .<span class="kw">await</span><span class="question-mark">?</span>;
                             <span class="kw">let </span>status = response.status().as_u16();
-                            <span class="kw">let </span>success = response.status().is_success();
+                            <span class="kw">let </span>is_error = response.status().is_client_error()
+                                || response.status().is_server_error();
                             <span class="kw">let </span>elapsed = start.elapsed();
-                            <span class="kw">if </span>!success
+                            <span class="kw">if </span>is_error
                                 || (<span class="macro">cfg!</span>(feature = <span class="string">&quot;log_request_stats&quot;</span>)
                                     &amp;&amp; elapsed &gt; Duration::from_secs(<span class="number">1</span>))
                             {
@@ -730,17 +832,15 @@
                 anyhow::Ok(service_fn(handler))
             }
         });
-        <span class="kw">let </span>server = Server::try_bind(<span class="kw-2">&amp;</span>addr)
-            .context(<span class="string">&quot;Not able to start server&quot;</span>)<span class="question-mark">?
-            </span>.serve(make_svc);
+        <span class="kw">let </span>server = <span class="self">self</span>.server.serve(make_svc);
 
-        <span class="prelude-val">Ok</span>(<span class="self">Self </span>{
-            addr: server.local_addr(),
+        DevServer {
+            addr: <span class="self">self</span>.addr,
             future: Box::pin(<span class="kw">async move </span>{
                 server.<span class="kw">await</span><span class="question-mark">?</span>;
                 <span class="prelude-val">Ok</span>(())
             }),
-        })
+        }
     }
 }
 

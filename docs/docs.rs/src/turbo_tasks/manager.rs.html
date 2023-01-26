@@ -1251,12 +1251,95 @@
 <span id="1251">1251</span>
 <span id="1252">1252</span>
 <span id="1253">1253</span>
+<span id="1254">1254</span>
+<span id="1255">1255</span>
+<span id="1256">1256</span>
+<span id="1257">1257</span>
+<span id="1258">1258</span>
+<span id="1259">1259</span>
+<span id="1260">1260</span>
+<span id="1261">1261</span>
+<span id="1262">1262</span>
+<span id="1263">1263</span>
+<span id="1264">1264</span>
+<span id="1265">1265</span>
+<span id="1266">1266</span>
+<span id="1267">1267</span>
+<span id="1268">1268</span>
+<span id="1269">1269</span>
+<span id="1270">1270</span>
+<span id="1271">1271</span>
+<span id="1272">1272</span>
+<span id="1273">1273</span>
+<span id="1274">1274</span>
+<span id="1275">1275</span>
+<span id="1276">1276</span>
+<span id="1277">1277</span>
+<span id="1278">1278</span>
+<span id="1279">1279</span>
+<span id="1280">1280</span>
+<span id="1281">1281</span>
+<span id="1282">1282</span>
+<span id="1283">1283</span>
+<span id="1284">1284</span>
+<span id="1285">1285</span>
+<span id="1286">1286</span>
+<span id="1287">1287</span>
+<span id="1288">1288</span>
+<span id="1289">1289</span>
+<span id="1290">1290</span>
+<span id="1291">1291</span>
+<span id="1292">1292</span>
+<span id="1293">1293</span>
+<span id="1294">1294</span>
+<span id="1295">1295</span>
+<span id="1296">1296</span>
+<span id="1297">1297</span>
+<span id="1298">1298</span>
+<span id="1299">1299</span>
+<span id="1300">1300</span>
+<span id="1301">1301</span>
+<span id="1302">1302</span>
+<span id="1303">1303</span>
+<span id="1304">1304</span>
+<span id="1305">1305</span>
+<span id="1306">1306</span>
+<span id="1307">1307</span>
+<span id="1308">1308</span>
+<span id="1309">1309</span>
+<span id="1310">1310</span>
+<span id="1311">1311</span>
+<span id="1312">1312</span>
+<span id="1313">1313</span>
+<span id="1314">1314</span>
+<span id="1315">1315</span>
+<span id="1316">1316</span>
+<span id="1317">1317</span>
+<span id="1318">1318</span>
+<span id="1319">1319</span>
+<span id="1320">1320</span>
+<span id="1321">1321</span>
+<span id="1322">1322</span>
+<span id="1323">1323</span>
+<span id="1324">1324</span>
+<span id="1325">1325</span>
+<span id="1326">1326</span>
+<span id="1327">1327</span>
+<span id="1328">1328</span>
+<span id="1329">1329</span>
+<span id="1330">1330</span>
+<span id="1331">1331</span>
+<span id="1332">1332</span>
+<span id="1333">1333</span>
+<span id="1334">1334</span>
+<span id="1335">1335</span>
 </pre><pre class="rust"><code><span class="kw">use </span>std::{
     borrow::Cow,
     cell::RefCell,
     collections::HashMap,
     future::Future,
     hash::Hash,
+    mem::take,
     panic::AssertUnwindSafe,
     pin::Pin,
     sync::{
@@ -1403,6 +1486,9 @@
     <span class="kw">fn </span>schedule_backend_foreground_job(<span class="kw-2">&amp;</span><span class="self">self</span>, id: BackendJobId);
 
     <span class="kw">fn </span>try_foreground_done(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;(), EventListener&gt;;
+    <span class="kw">fn </span>wait_foreground_done_excluding_own&lt;<span class="lifetime">&#39;a</span>&gt;(
+        <span class="kw-2">&amp;</span><span class="lifetime">&#39;a </span><span class="self">self</span>,
+    ) -&gt; <span class="prelude-ty">Option</span>&lt;Pin&lt;Box&lt;<span class="kw">dyn </span>Future&lt;Output = ()&gt; + Send + <span class="lifetime">&#39;a</span>&gt;&gt;&gt;;
 
     <span class="doccomment">/// Enqueues tasks for notification of changed dependencies. This will
     /// eventually call `invalidate_tasks()` on all tasks.
@@ -1464,12 +1550,24 @@
     start: Mutex&lt;<span class="prelude-ty">Option</span>&lt;Instant&gt;&gt;,
     aggregated_update: Mutex&lt;<span class="prelude-ty">Option</span>&lt;(Duration, usize)&gt;&gt;,
     event: Event,
+    event_start: Event,
     event_foreground: Event,
     event_background: Event,
     <span class="comment">// NOTE(alexkirsz) We use an atomic bool instead of a lock around `StatsType` to avoid the
     // locking overhead.
     </span>enable_full_stats: AtomicBool,
     program_start: Instant,
+}
+
+<span class="attr">#[derive(Default)]
+</span><span class="kw">struct </span>CurrentTaskState {
+    <span class="doccomment">/// Affected [Task]s, that are tracked during task execution
+    /// These tasks will be invalidated when the execution finishes
+    /// or before reading a cell value
+    </span>tasks_to_notify: Vec&lt;TaskId&gt;,
+
+    <span class="comment">// true, if the current task has state in cells
+    </span>stateful: bool,
 }
 
 <span class="comment">// TODO implement our own thread pool and make these thread locals instead
@@ -1481,10 +1579,7 @@
 
     <span class="kw">static </span>CURRENT_TASK_ID: TaskId;
 
-    <span class="doccomment">/// Affected [Task]s, that are tracked during task execution
-    /// These tasks will be invalidated when the execution finishes
-    /// or before reading a cell value
-    </span><span class="kw">static </span>TASKS_TO_NOTIFY: RefCell&lt;Vec&lt;TaskId&gt;&gt;;
+    <span class="kw">static </span>CURRENT_TASK_STATE: RefCell&lt;CurrentTaskState&gt;;
 }
 
 <span class="kw">impl</span>&lt;B: Backend&gt; TurboTasks&lt;B&gt; {
@@ -1508,6 +1603,7 @@
             start: Default::default(),
             aggregated_update: Default::default(),
             event: Event::new(|| <span class="string">&quot;TurboTasks::event&quot;</span>.to_string()),
+            event_start: Event::new(|| <span class="string">&quot;TurboTasks::event_start&quot;</span>.to_string()),
             event_foreground: Event::new(|| <span class="string">&quot;TurboTasks::event_foreground&quot;</span>.to_string()),
             event_background: Event::new(|| <span class="string">&quot;TurboTasks::event_background&quot;</span>.to_string()),
             enable_full_stats: AtomicBool::new(<span class="bool-val">false</span>),
@@ -1633,59 +1729,60 @@
 
         <span class="kw">let </span>this = <span class="self">self</span>.pin();
         <span class="kw">let </span>future = <span class="kw">async move </span>{
-            <span class="kw">loop </span>{
-                <span class="kw">if </span>this.stopped.load(Ordering::Acquire) {
-                    <span class="kw">break</span>;
-                }
-                <span class="kw">if let </span><span class="prelude-val">Some</span>(execution) = this.backend.try_start_task_execution(task_id, <span class="kw-2">&amp;*</span>this) {
-                    <span class="comment">// Setup thread locals
-                    </span><span class="kw">let </span>(result, duration, instant) = CELL_COUNTERS
-                        .scope(Default::default(), <span class="kw">async </span>{
-                            <span class="kw">let </span>(result, duration, instant) =
-                                TimedFuture::new(AssertUnwindSafe(execution.future).catch_unwind())
-                                    .<span class="kw">await</span>;
-                            (result, duration, instant)
-                        })
-                        .<span class="kw">await</span>;
-                    <span class="kw">if </span><span class="macro">cfg!</span>(feature = <span class="string">&quot;log_function_stats&quot;</span>) &amp;&amp; duration.as_millis() &gt; <span class="number">1000 </span>{
-                        <span class="macro">println!</span>(
-                            <span class="string">&quot;{} took {}&quot;</span>,
-                            this.backend.get_task_description(task_id),
-                            FormatDuration(duration)
-                        )
+            <span class="attr">#[allow(clippy::blocks_in_if_conditions)]
+            </span><span class="kw">while </span>CURRENT_TASK_STATE
+                .scope(Default::default(), <span class="kw">async </span>{
+                    <span class="kw">if </span>this.stopped.load(Ordering::Acquire) {
+                        <span class="kw">return </span><span class="bool-val">false</span>;
                     }
-                    <span class="kw">let </span>result = result.map_err(|any| <span class="kw">match </span>any.downcast::&lt;String&gt;() {
-                        <span class="prelude-val">Ok</span>(owned) =&gt; <span class="prelude-val">Some</span>(Cow::Owned(<span class="kw-2">*</span>owned)),
-                        <span class="prelude-val">Err</span>(any) =&gt; <span class="kw">match </span>any.downcast::&lt;<span class="kw-2">&amp;</span><span class="lifetime">&#39;static </span>str&gt;() {
-                            <span class="prelude-val">Ok</span>(str) =&gt; <span class="prelude-val">Some</span>(Cow::Borrowed(<span class="kw-2">*</span>str)),
-                            <span class="prelude-val">Err</span>(<span class="kw">_</span>) =&gt; <span class="prelude-val">None</span>,
-                        },
-                    });
-                    this.backend.task_execution_result(task_id, result, <span class="kw-2">&amp;*</span>this);
-                    this.notify_scheduled_tasks_internal();
-                    <span class="kw">let </span>reexecute = this
-                        .backend
-                        .task_execution_completed(task_id, duration, instant, <span class="kw-2">&amp;*</span>this);
-                    <span class="kw">if </span>!reexecute {
-                        <span class="kw">break</span>;
+                    <span class="kw">if let </span><span class="prelude-val">Some</span>(execution) = this.backend.try_start_task_execution(task_id, <span class="kw-2">&amp;*</span>this)
+                    {
+                        <span class="comment">// Setup thread locals
+                        </span><span class="kw">let </span>(result, duration, instant) = CELL_COUNTERS
+                            .scope(Default::default(), <span class="kw">async </span>{
+                                <span class="kw">let </span>(result, duration, instant) = TimedFuture::new(
+                                    AssertUnwindSafe(execution.future).catch_unwind(),
+                                )
+                                .<span class="kw">await</span>;
+                                (result, duration, instant)
+                            })
+                            .<span class="kw">await</span>;
+                        <span class="kw">if </span><span class="macro">cfg!</span>(feature = <span class="string">&quot;log_function_stats&quot;</span>) &amp;&amp; duration.as_millis() &gt; <span class="number">1000 </span>{
+                            <span class="macro">println!</span>(
+                                <span class="string">&quot;{} took {}&quot;</span>,
+                                this.backend.get_task_description(task_id),
+                                FormatDuration(duration)
+                            )
+                        }
+                        <span class="kw">let </span>result = result.map_err(|any| <span class="kw">match </span>any.downcast::&lt;String&gt;() {
+                            <span class="prelude-val">Ok</span>(owned) =&gt; <span class="prelude-val">Some</span>(Cow::Owned(<span class="kw-2">*</span>owned)),
+                            <span class="prelude-val">Err</span>(any) =&gt; <span class="kw">match </span>any.downcast::&lt;<span class="kw-2">&amp;</span><span class="lifetime">&#39;static </span>str&gt;() {
+                                <span class="prelude-val">Ok</span>(str) =&gt; <span class="prelude-val">Some</span>(Cow::Borrowed(<span class="kw-2">*</span>str)),
+                                <span class="prelude-val">Err</span>(<span class="kw">_</span>) =&gt; <span class="prelude-val">None</span>,
+                            },
+                        });
+                        this.backend.task_execution_result(task_id, result, <span class="kw-2">&amp;*</span>this);
+                        <span class="kw">let </span>stateful = this.finish_current_task_state();
+                        <span class="kw">let </span>reexecute = this
+                            .backend
+                            .task_execution_completed(task_id, duration, instant, stateful, <span class="kw-2">&amp;*</span>this);
+                        <span class="kw">if </span>!reexecute {
+                            <span class="kw">return </span><span class="bool-val">false</span>;
+                        }
+                    } <span class="kw">else </span>{
+                        <span class="kw">return </span><span class="bool-val">false</span>;
                     }
-                } <span class="kw">else </span>{
-                    <span class="kw">break</span>;
-                }
-            }
+                    <span class="bool-val">true
+                </span>})
+                .<span class="kw">await
+            </span>{}
             this.finish_primary_job();
             anyhow::Ok(())
         };
 
         <span class="kw">let </span>future = TURBO_TASKS.scope(
             <span class="self">self</span>.pin(),
-            CURRENT_TASK_ID.scope(
-                task_id,
-                TASKS_TO_NOTIFY.scope(
-                    Default::default(),
-                    <span class="self">self</span>.backend.execution_scope(task_id, future),
-                ),
-            ),
+            CURRENT_TASK_ID.scope(task_id, <span class="self">self</span>.backend.execution_scope(task_id, future)),
         );
 
         <span class="attr">#[cfg(feature = <span class="string">&quot;tokio_tracing&quot;</span>)]
@@ -1704,6 +1801,7 @@
             == <span class="number">0
         </span>{
             <span class="kw-2">*</span><span class="self">self</span>.start.lock().unwrap() = <span class="prelude-val">Some</span>(Instant::now());
+            <span class="self">self</span>.event_start.notify(usize::MAX);
         }
     }
 
@@ -1719,6 +1817,7 @@
             .fetch_sub(<span class="number">1</span>, Ordering::AcqRel)
             == <span class="number">1
         </span>{
+            <span class="self">self</span>.backend.idle_start(<span class="self">self</span>);
             <span class="comment">// That&#39;s not super race-condition-safe, but it&#39;s only for
             // statistical reasons
             </span><span class="kw">let </span>total = <span class="self">self</span>.scheduled_tasks.load(Ordering::Acquire);
@@ -1777,31 +1876,63 @@
     }
 
     <span class="kw">pub async fn </span>get_or_wait_update_info(<span class="kw-2">&amp;</span><span class="self">self</span>, aggregation: Duration) -&gt; (Duration, usize) {
+        <span class="self">self</span>.update_info(aggregation, Duration::MAX).<span class="kw">await</span>.unwrap()
+    }
+
+    <span class="kw">pub async fn </span>update_info(
+        <span class="kw-2">&amp;</span><span class="self">self</span>,
+        aggregation: Duration,
+        timeout: Duration,
+    ) -&gt; <span class="prelude-ty">Option</span>&lt;(Duration, usize)&gt; {
         <span class="kw">let </span>listener = <span class="self">self
             </span>.event
             .listen_with_note(|| <span class="string">&quot;wait for update info&quot;</span>.to_string());
-        <span class="kw">if </span>aggregation.is_zero() {
-            <span class="kw">if let </span><span class="prelude-val">Some</span>(info) = <span class="kw-2">*</span><span class="self">self</span>.aggregated_update.lock().unwrap() {
-                <span class="kw">return </span>info;
+        <span class="kw">let </span>wait_for_finish = {
+            <span class="kw">let </span><span class="kw-2">mut </span>update = <span class="self">self</span>.aggregated_update.lock().unwrap();
+            <span class="kw">if </span>update.is_some() {
+                <span class="kw">if </span>aggregation.is_zero() {
+                    <span class="kw">return </span>update.take();
+                }
+                <span class="bool-val">false
+            </span>} <span class="kw">else </span>{
+                <span class="bool-val">true
+            </span>}
+        };
+        <span class="kw">if </span>wait_for_finish {
+            <span class="kw">if </span>timeout == Duration::MAX {
+                <span class="comment">// wait for finish
+                </span>listener.<span class="kw">await</span>;
+            } <span class="kw">else </span>{
+                <span class="comment">// wait for start, then wait for finish or timeout
+                </span><span class="kw">let </span>start_listener = <span class="self">self
+                    </span>.event_start
+                    .listen_with_note(|| <span class="string">&quot;wait for update info&quot;</span>.to_string());
+                <span class="kw">if </span><span class="self">self</span>.currently_scheduled_tasks.load(Ordering::Acquire) == <span class="number">0 </span>{
+                    start_listener.<span class="kw">await</span>;
+                } <span class="kw">else </span>{
+                    drop(start_listener);
+                }
+                <span class="kw">if </span>timeout.is_zero()
+                    || <span class="macro">matches!</span>(tokio::time::timeout(timeout, listener).<span class="kw">await</span>, <span class="prelude-val">Err</span>(<span class="kw">_</span>))
+                {
+                    <span class="comment">// Timeout
+                    </span><span class="kw">return </span><span class="prelude-val">None</span>;
+                }
             }
-            listener.<span class="kw">await</span>;
-        } <span class="kw">else </span>{
-            <span class="kw">if </span><span class="self">self</span>.aggregated_update.lock().unwrap().is_none() {
-                listener.<span class="kw">await</span>;
-            }
+        }
+        <span class="kw">if </span>!aggregation.is_zero() {
             <span class="kw">loop </span>{
                 <span class="macro">select! </span>{
                     () = tokio::time::sleep(aggregation) =&gt; {
                         <span class="kw">break</span>;
                     }
-                    () = <span class="self">self</span>.event.listen() =&gt; {
+                    () = <span class="self">self</span>.event.listen_with_note(|| <span class="string">&quot;wait for update info&quot;</span>.to_string()) =&gt; {
                         <span class="comment">// Resets the sleep
                     </span>}
                 }
             }
         }
-        <span class="comment">// TODO(alexkirsz) The take unwrap crashed on me.
-        </span><span class="kw">return </span><span class="self">self</span>.aggregated_update.lock().unwrap().take().unwrap();
+        <span class="kw">return </span><span class="self">self</span>.aggregated_update.lock().unwrap().take();
     }
 
     <span class="kw">pub async fn </span>wait_background_done(<span class="kw-2">&amp;</span><span class="self">self</span>) {
@@ -1818,7 +1949,7 @@
     <span class="kw">pub async fn </span>stop_and_wait(<span class="kw-2">&amp;</span><span class="self">self</span>) {
         <span class="self">self</span>.stopped.store(<span class="bool-val">true</span>, Ordering::Release);
         {
-            <span class="kw">let </span>listener = <span class="self">self</span>.event.listen();
+            <span class="kw">let </span>listener = <span class="self">self</span>.event.listen_with_note(|| <span class="string">&quot;wait for stop&quot;</span>.to_string());
             <span class="kw">if </span><span class="self">self</span>.currently_scheduled_tasks.load(Ordering::Acquire) != <span class="number">0 </span>{
                 listener.<span class="kw">await</span>;
             }
@@ -1849,7 +1980,9 @@
             .fetch_add(<span class="number">1</span>, Ordering::AcqRel);
         tokio::spawn(TURBO_TASKS.scope(this.clone(), <span class="kw">async move </span>{
             <span class="kw">while </span>this.currently_scheduled_tasks.load(Ordering::Acquire) != <span class="number">0 </span>{
-                <span class="kw">let </span>listener = this.event.listen();
+                <span class="kw">let </span>listener = this
+                    .event
+                    .listen_with_note(|| <span class="string">&quot;background job waiting for execution&quot;</span>.to_string());
                 <span class="kw">if </span>this.currently_scheduled_tasks.load(Ordering::Acquire) != <span class="number">0 </span>{
                     listener.<span class="kw">await</span>;
                 }
@@ -1886,14 +2019,18 @@
         }));
     }
 
-    <span class="kw">fn </span>notify_scheduled_tasks_internal(<span class="kw-2">&amp;</span><span class="self">self</span>) {
-        TASKS_TO_NOTIFY.with(|tasks| {
-            <span class="kw">let </span>tasks = tasks.take();
-            <span class="kw">if </span>tasks.is_empty() {
-                <span class="kw">return</span>;
+    <span class="kw">fn </span>finish_current_task_state(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+        CURRENT_TASK_STATE.with(|cell| {
+            <span class="kw">let </span>CurrentTaskState {
+                tasks_to_notify,
+                stateful,
+            } = <span class="kw-2">&amp;mut *</span>cell.borrow_mut();
+            <span class="kw">let </span>tasks = take(tasks_to_notify);
+            <span class="kw">if </span>!tasks.is_empty() {
+                <span class="self">self</span>.backend.invalidate_tasks(tasks, <span class="self">self</span>);
             }
-            <span class="self">self</span>.backend.invalidate_tasks(tasks, <span class="self">self</span>);
-        });
+            <span class="kw-2">*</span>stateful
+        })
     }
 
     <span class="kw">pub fn </span>backend(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>B {
@@ -1949,8 +2086,11 @@
     }
 
     <span class="kw">fn </span>notify_scheduled_tasks(<span class="kw-2">&amp;</span><span class="self">self</span>) {
-        <span class="kw">let _ </span>= TASKS_TO_NOTIFY.try_with(|tasks| {
-            <span class="kw">let </span>tasks = tasks.take();
+        <span class="kw">let _ </span>= CURRENT_TASK_STATE.try_with(|cell| {
+            <span class="kw">let </span>CurrentTaskState {
+                tasks_to_notify, ..
+            } = <span class="kw-2">&amp;mut *</span>cell.borrow_mut();
+            <span class="kw">let </span>tasks = take(tasks_to_notify);
             <span class="kw">if </span>tasks.is_empty() {
                 <span class="kw">return</span>;
             }
@@ -2099,12 +2239,31 @@
         <span class="prelude-val">Err</span>(listener)
     }
 
+    <span class="kw">fn </span>wait_foreground_done_excluding_own&lt;<span class="lifetime">&#39;a</span>&gt;(
+        <span class="kw-2">&amp;</span><span class="lifetime">&#39;a </span><span class="self">self</span>,
+    ) -&gt; <span class="prelude-ty">Option</span>&lt;Pin&lt;Box&lt;<span class="kw">dyn </span>Future&lt;Output = ()&gt; + Send + <span class="lifetime">&#39;a</span>&gt;&gt;&gt; {
+        <span class="kw">if </span><span class="self">self
+            </span>.currently_scheduled_foreground_jobs
+            .load(Ordering::Acquire)
+            == <span class="number">0
+        </span>{
+            <span class="kw">return </span><span class="prelude-val">None</span>;
+        }
+        <span class="prelude-val">Some</span>(Box::pin(<span class="kw">async </span>{
+            <span class="self">self</span>.finish_foreground_job();
+            <span class="self">self</span>.wait_foreground_done().<span class="kw">await</span>;
+            <span class="self">self</span>.begin_foreground_job();
+        }))
+    }
+
     <span class="doccomment">/// Enqueues tasks for notification of changed dependencies. This will
     /// eventually call `dependent_cell_updated()` on all tasks.
     </span><span class="kw">fn </span>schedule_notify_tasks(<span class="kw-2">&amp;</span><span class="self">self</span>, tasks: <span class="kw-2">&amp;</span>[TaskId]) {
-        <span class="kw">let </span>result = TASKS_TO_NOTIFY.try_with(|tasks_list| {
-            <span class="kw">let </span><span class="kw-2">mut </span>list = tasks_list.borrow_mut();
-            list.extend(tasks.iter());
+        <span class="kw">let </span>result = CURRENT_TASK_STATE.try_with(|cell| {
+            <span class="kw">let </span>CurrentTaskState {
+                tasks_to_notify, ..
+            } = <span class="kw-2">&amp;mut *</span>cell.borrow_mut();
+            tasks_to_notify.extend(tasks.iter());
         });
         <span class="kw">if </span>result.is_err() {
             <span class="self">self</span>.backend.invalidate_tasks(tasks.to_vec(), <span class="self">self</span>);
@@ -2114,9 +2273,11 @@
     <span class="doccomment">/// Enqueues tasks for notification of changed dependencies. This will
     /// eventually call `dependent_cell_updated()` on all tasks.
     </span><span class="kw">fn </span>schedule_notify_tasks_set(<span class="kw-2">&amp;</span><span class="self">self</span>, tasks: <span class="kw-2">&amp;</span>AutoSet&lt;TaskId&gt;) {
-        <span class="kw">let </span>result = TASKS_TO_NOTIFY.try_with(|tasks_list| {
-            <span class="kw">let </span><span class="kw-2">mut </span>list = tasks_list.borrow_mut();
-            list.extend(tasks.iter());
+        <span class="kw">let </span>result = CURRENT_TASK_STATE.try_with(|cell| {
+            <span class="kw">let </span>CurrentTaskState {
+                tasks_to_notify, ..
+            } = <span class="kw-2">&amp;mut *</span>cell.borrow_mut();
+            tasks_to_notify.extend(tasks.iter());
         });
         <span class="kw">if </span>result.is_err() {
             <span class="self">self</span>.backend
@@ -2322,8 +2483,11 @@
 <span class="doccomment">/// Marks the current task as stateful. This prevents the tasks from being
 /// dropped without persisting the state.
 </span><span class="kw">pub fn </span>mark_stateful() {
-    <span class="comment">// TODO pass this to the backend
-</span>}
+    CURRENT_TASK_STATE.with(|cell| {
+        <span class="kw">let </span>CurrentTaskState { stateful, .. } = <span class="kw-2">&amp;mut *</span>cell.borrow_mut();
+        <span class="kw-2">*</span>stateful = <span class="bool-val">true</span>;
+    })
+}
 
 <span class="kw">pub fn </span>emit&lt;T: ValueTraitVc&gt;(collectible: T) {
     with_turbo_tasks(|tt| tt.emit_collectible(T::get_trait_type_id(), collectible.into()))

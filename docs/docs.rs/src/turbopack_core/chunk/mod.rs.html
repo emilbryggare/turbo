@@ -510,8 +510,6 @@
 <span id="510">510</span>
 <span id="511">511</span>
 <span id="512">512</span>
-<span id="513">513</span>
-<span id="514">514</span>
 </pre><pre class="rust"><code><span class="kw">pub mod </span>dev;
 <span class="kw">pub mod </span>optimize;
 
@@ -527,11 +525,12 @@
     ValueToString, ValueToStringVc,
 };
 <span class="kw">use </span>turbo_tasks_fs::FileSystemPathVc;
-<span class="kw">use </span>turbo_tasks_hash::{encode_hex, DeterministicHash, Xxh3Hash64Hasher};
+<span class="kw">use </span>turbo_tasks_hash::DeterministicHash;
 
 <span class="kw">use </span><span class="self">self</span>::optimize::optimize;
 <span class="kw">use crate</span>::{
     asset::{Asset, AssetVc, AssetsVc},
+    environment::EnvironmentVc,
     reference::{AssetReference, AssetReferenceVc, AssetReferencesVc},
     resolve::{ResolveResult, ResolveResultVc},
 };
@@ -546,13 +545,11 @@
 }
 
 <span class="kw">impl </span>ModuleId {
-    <span class="doccomment">/// Returns a truncated hash of the module id.
-    </span><span class="kw">pub fn </span>to_truncated_hash(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; String {
-        <span class="kw">let </span><span class="kw-2">mut </span>hasher = Xxh3Hash64Hasher::new();
-        hasher.write_ref(<span class="self">self</span>);
-        <span class="kw">let </span><span class="kw-2">mut </span>hash = encode_hex(hasher.finish());
-        hash.truncate(<span class="number">6</span>);
-        hash
+    <span class="kw">pub fn </span>parse(id: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;ModuleId&gt; {
+        <span class="prelude-val">Ok</span>(<span class="kw">match </span>id.parse::&lt;u32&gt;() {
+            <span class="prelude-val">Ok</span>(i) =&gt; ModuleId::Number(i),
+            <span class="prelude-val">Err</span>(<span class="kw">_</span>) =&gt; ModuleId::String(id.to_string()),
+        })
     }
 }
 
@@ -564,6 +561,8 @@
 </span><span class="attr">#[turbo_tasks::value_trait]
 </span><span class="kw">pub trait </span>ChunkingContext {
     <span class="kw">fn </span>output_root(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; FileSystemPathVc;
+
+    <span class="kw">fn </span>environment(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; EnvironmentVc;
 
     <span class="kw">fn </span>chunk_path(<span class="kw-2">&amp;</span><span class="self">self</span>, path: FileSystemPathVc, extension: <span class="kw-2">&amp;</span>str) -&gt; FileSystemPathVc;
 
@@ -672,12 +671,15 @@
 
 <span class="doccomment">/// Specifies how a chunk interacts with other chunks when building a chunk
 /// group
-</span><span class="attr">#[derive(Copy, Clone, TraceRawVcs, Serialize, Deserialize, Eq, PartialEq, ValueDebugFormat)]
+</span><span class="attr">#[derive(
+    Copy, Default, Clone, Hash, TraceRawVcs, Serialize, Deserialize, Eq, PartialEq, ValueDebugFormat,
+)]
 </span><span class="kw">pub enum </span>ChunkingType {
     <span class="doccomment">/// Asset is always placed into the referencing chunk and loaded with it.
     </span>Placed,
     <span class="doccomment">/// A heuristic determines if the asset is placed into the referencing chunk
     /// or in a separate chunk that is loaded in parallel.
+    </span><span class="attr">#[default]
     </span>PlacedOrParallel,
     <span class="doccomment">/// Asset is always placed in a separate chunk that is loaded in parallel.
     </span>Parallel,
@@ -686,15 +688,9 @@
     /// Note: Separate chunks need to be loaded by something external to current
     /// reference.
     </span>Separate,
-    <span class="doccomment">/// A async loader is placed into the referencing chunk and loads the
+    <span class="doccomment">/// An async loader is placed into the referencing chunk and loads the
     /// separate chunk group in which the asset is placed.
     </span>SeparateAsync,
-}
-
-<span class="kw">impl </span>Default <span class="kw">for </span>ChunkingType {
-    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
-        ChunkingType::PlacedOrParallel
-    }
 }
 
 <span class="attr">#[turbo_tasks::value(transparent)]
@@ -867,7 +863,7 @@
         chunk_item.references(),
     ));
     chunk_items.push(chunk_item);
-    processed_assets.insert(entry);
+    processed_assets.insert((ChunkingType::Placed, entry));
 
     <span class="kw">if let </span><span class="prelude-val">Some</span>(additional_entries) = additional_entries {
         <span class="kw">for </span>entry <span class="kw">in </span><span class="kw-2">&amp;*</span>additional_entries.<span class="kw">await</span><span class="question-mark">? </span>{
@@ -876,7 +872,7 @@
                 chunk_item.references(),
             ));
             chunk_items.push(chunk_item);
-            processed_assets.insert(<span class="kw-2">*</span>entry);
+            processed_assets.insert((ChunkingType::Placed, <span class="kw-2">*</span>entry));
         }
     }
 
@@ -920,7 +916,7 @@
                 <span class="kw">for </span>asset <span class="kw">in </span>assets
                     .<span class="kw">await</span><span class="question-mark">?
                     </span>.iter()
-                    .filter(|asset| processed_assets.insert(<span class="kw-2">**</span>asset))
+                    .filter(|asset| processed_assets.insert((chunking_type, <span class="kw-2">**</span>asset)))
                 {
                     <span class="kw">let </span>asset: <span class="kw-2">&amp;</span>AssetVc = asset;
 
